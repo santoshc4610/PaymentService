@@ -4,6 +4,8 @@ import com.example.PaymentService.Dto.RequestMessage;
 import com.example.PaymentService.Model.*;
 import com.example.PaymentService.Repository.*;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.retry.RetryContext;
+import org.springframework.retry.support.RetrySynchronizationManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -47,6 +49,8 @@ public  class PaymentHelper {
     @Transactional
     public PaymentModel savePaymentInfo(RequestMessage requestMessage) {
         String key = requestMessage.getIdempotencyKey();
+        RetryContext context = RetrySynchronizationManager.getContext();
+        int retryCount =0;
         if (key == null || key.isEmpty()) {
             throw new IllegalArgumentException("Idempotency key is required");
         }
@@ -111,14 +115,16 @@ public  class PaymentHelper {
 
             if(isSystemFailure(ex))
             {
-
                 PaymentRecoveryModel paymentRecoveryModel = new PaymentRecoveryModel();
                 paymentRecoveryModel.setPayload(String.valueOf(requestMessage));
                 paymentRecoveryModel.setIdempotencyKey(requestMessage.getIdempotencyKey());
                 paymentRecoveryModel.setReceivedAt(LocalDateTime.now());
-                paymentRetryProducer.sendRetryToTopic(paymentRecoveryModel);
-                idempotencyService.markForRetry(key);
-
+                if(context!=null)
+                    retryCount = context.getRetryCount()+1;
+                if(retryCount==3) {
+                    paymentRetryProducer.sendRetryToTopic(paymentRecoveryModel);
+                    idempotencyService.markForRetry(key);
+                }
             }
             idempotencyService.markAsFailed(key,ex);
             throw ex;
